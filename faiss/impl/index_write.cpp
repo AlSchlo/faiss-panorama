@@ -27,6 +27,7 @@
 #include <faiss/IndexIVFAdditiveQuantizer.h>
 #include <faiss/IndexIVFAdditiveQuantizerFastScan.h>
 #include <faiss/IndexIVFFlat.h>
+#include <faiss/IndexIVFFlatPanorama.h>
 #include <faiss/IndexIVFIndependentQuantizer.h>
 #include <faiss/IndexIVFPQ.h>
 #include <faiss/IndexIVFPQFastScan.h>
@@ -247,6 +248,53 @@ void write_InvertedLists(const InvertedLists* ils, IOWriter* f) {
     if (ils == nullptr) {
         uint32_t h = fourcc("il00");
         WRITE1(h);
+    } else if (
+            const auto& ailp =
+                    dynamic_cast<const ArrayInvertedListsPanorama*>(ils)) {
+        // Panorama inverted lists
+        uint32_t h = fourcc("ilpn");
+        WRITE1(h);
+        WRITE1(ailp->nlist);
+        WRITE1(ailp->code_size);
+        WRITE1(ailp->n_levels);
+        // here we store either as a full or a sparse data buffer
+        size_t n_non0 = 0;
+        for (size_t i = 0; i < ailp->nlist; i++) {
+            if (ailp->ids[i].size() > 0) {
+                n_non0++;
+            }
+        }
+        if (n_non0 > ailp->nlist / 2) {
+            uint32_t list_type = fourcc("full");
+            WRITE1(list_type);
+            std::vector<size_t> sizes;
+            for (size_t i = 0; i < ailp->nlist; i++) {
+                sizes.push_back(ailp->ids[i].size());
+            }
+            WRITEVECTOR(sizes);
+        } else {
+            int list_type = fourcc("sprs"); // sparse
+            WRITE1(list_type);
+            std::vector<size_t> sizes;
+            for (size_t i = 0; i < ailp->nlist; i++) {
+                size_t n = ailp->ids[i].size();
+                if (n > 0) {
+                    sizes.push_back(i);
+                    sizes.push_back(n);
+                }
+            }
+            WRITEVECTOR(sizes);
+        }
+        // Write codes, ids, and cum_sums
+        for (size_t i = 0; i < ailp->nlist; i++) {
+            size_t n = ailp->ids[i].size();
+            if (n > 0) {
+                WRITEANDCHECK(ailp->codes[i].data(), ailp->codes[i].size());
+                WRITEANDCHECK(ailp->ids[i].data(), n);
+                WRITEANDCHECK(
+                        ailp->cum_sums[i].data(), ailp->cum_sums[i].size());
+            }
+        }
     } else if (
             const auto& ails = dynamic_cast<const ArrayInvertedLists*>(ils)) {
         uint32_t h = fourcc("ilar");
@@ -640,6 +688,14 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
             WRITEVECTOR(tab);
         }
         write_InvertedLists(ivfl->invlists, f);
+    } else if (
+            const IndexIVFFlatPanorama* ivfp =
+                    dynamic_cast<const IndexIVFFlatPanorama*>(idx)) {
+        uint32_t h = fourcc("IwPn");
+        WRITE1(h);
+        write_ivf_header(ivfp, f);
+        WRITE1(ivfp->n_levels);
+        write_InvertedLists(ivfp->invlists, f);
     } else if (
             const IndexIVFFlat* ivfl_2 =
                     dynamic_cast<const IndexIVFFlat*>(idx)) {

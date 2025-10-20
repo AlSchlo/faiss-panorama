@@ -36,6 +36,10 @@ namespace faiss {
 /// insertion logic. The code responsible for level-oriented storage is in
 /// `ArrayInvertedListsPanorama`, which is a struct member of `IndexIVF`.
 struct IndexIVFFlatPanorama : IndexIVFFlat {
+    const size_t n_levels;
+    
+    std::vector<MaybeOwnedVector<float>> cum_sums;
+
     explicit IndexIVFFlatPanorama(
             Index* quantizer,
             size_t d,
@@ -51,10 +55,6 @@ struct IndexIVFFlatPanorama : IndexIVFFlat {
 
     void reconstruct_from_offset(int64_t list_no, int64_t offset, float* recons)
             const override;
-
-   private:
-    const size_t n_levels;
-    std::vector<MaybeOwnedVector<float>> cum_sums;
 };
 
 } // namespace faiss

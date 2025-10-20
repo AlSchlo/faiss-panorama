@@ -29,6 +29,7 @@
 #include <faiss/IndexIVFAdditiveQuantizer.h>
 #include <faiss/IndexIVFAdditiveQuantizerFastScan.h>
 #include <faiss/IndexIVFFlat.h>
+#include <faiss/IndexIVFFlatPanorama.h>
 #include <faiss/IndexIVFIndependentQuantizer.h>
 #include <faiss/IndexIVFPQ.h>
 #include <faiss/IndexIVFPQFastScan.h>
@@ -327,6 +328,38 @@ InvertedLists* read_InvertedLists(IOReader* f, int io_flags) {
                 "read_InvertedLists:"
                 " WARN! inverted lists not stored with IVF object\n");
         return nullptr;
+    } else if (h == fourcc("ilpn") && !(io_flags & IO_FLAG_SKIP_IVF_DATA)) {
+        // Panorama inverted lists
+        size_t nlist, code_size, n_levels;
+        READ1(nlist);
+        READ1(code_size);
+        READ1(n_levels);
+        auto ailp = new ArrayInvertedListsPanorama(nlist, code_size, n_levels);
+        std::vector<size_t> sizes(nlist);
+        read_ArrayInvertedLists_sizes(f, sizes);
+        for (size_t i = 0; i < nlist; i++) {
+            ailp->ids[i].resize(sizes[i]);
+            size_t num_batches =
+                    (sizes[i] + ArrayInvertedListsPanorama::kBatchSize - 1) /
+                    ArrayInvertedListsPanorama::kBatchSize;
+            ailp->codes[i].resize(
+                    num_batches * ArrayInvertedListsPanorama::kBatchSize *
+                    code_size);
+            ailp->cum_sums[i].resize(
+                    num_batches * ArrayInvertedListsPanorama::kBatchSize *
+                    (n_levels + 1));
+        }
+        for (size_t i = 0; i < nlist; i++) {
+            size_t n = sizes[i];
+            if (n > 0) {
+                read_vector_with_known_size(
+                        ailp->codes[i], f, ailp->codes[i].size());
+                read_vector_with_known_size(ailp->ids[i], f, n);
+                read_vector_with_known_size(
+                        ailp->cum_sums[i], f, ailp->cum_sums[i].size());
+            }
+        }
+        return ailp;
     } else if (h == fourcc("ilar") && !(io_flags & IO_FLAG_SKIP_IVF_DATA)) {
         auto ails = new ArrayInvertedLists(0, 0);
         READ1(ails->nlist);
@@ -929,6 +962,37 @@ Index* read_index(IOReader* f, int io_flags) {
         }
         read_InvertedLists(ivfl, f, io_flags);
         idx = ivfl;
+    } else if (h == fourcc("IwPn")) {
+        // Read into a temporary IndexIVFFlat to get header info
+        IndexIVFFlat* temp = new IndexIVFFlat();
+        read_ivf_header(temp, f);
+        size_t n_levels_read;
+        READ1(n_levels_read);
+        
+        // Extract values and construct the real IndexIVFFlatPanorama
+        Index* quantizer = temp->quantizer;
+        temp->quantizer = nullptr; // prevent deletion
+        size_t d = temp->d;
+        size_t nlist = temp->nlist;
+        size_t nprobe = temp->nprobe;
+        MetricType metric = temp->metric_type;
+        float metric_arg = temp->metric_arg;
+        DirectMap direct_map = std::move(temp->direct_map);
+        bool is_trained = temp->is_trained;
+        idx_t ntotal = temp->ntotal;
+        delete temp;
+        
+        IndexIVFFlatPanorama* ivfp = new IndexIVFFlatPanorama(
+                quantizer, d, nlist, n_levels_read, metric, true);
+        ivfp->own_fields = true;
+        ivfp->nprobe = nprobe;
+        ivfp->metric_arg = metric_arg;
+        ivfp->direct_map = std::move(direct_map);
+        ivfp->is_trained = is_trained;
+        ivfp->ntotal = ntotal;
+        ivfp->code_size = d * sizeof(float);
+        read_InvertedLists(ivfp, f, io_flags);
+        idx = ivfp;
     } else if (h == fourcc("IwFl")) {
         IndexIVFFlat* ivfl = new IndexIVFFlat();
         read_ivf_header(ivfl, f);

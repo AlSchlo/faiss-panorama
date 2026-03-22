@@ -58,8 +58,13 @@ def eval_recall(index, nprobe_val):
     return recall, qps
 
 
-def eval_and_plot(name, plot=True):
+def eval_and_plot(name, plot=True, vertical=False):
     index = faiss.index_factory(d, name)
+
+    if vertical:
+        ivf = get_ivf_index(index)
+        pano_ivf = faiss.downcast_index(ivf)
+        pano_ivf.set_vertical_layout(True)
 
     faiss.omp_set_num_threads(mp.cpu_count())
     index.train(xt)
@@ -70,8 +75,9 @@ def eval_and_plot(name, plot=True):
     # Get the underlying IVF index for setting nprobe
     ivf_index = get_ivf_index(index)
 
+    label = name + (" (vertical)" if vertical else " (horizontal)")
     data = []
-    print(f"======{name}")
+    print(f"======{label}")
     for nprobe in 1, 2, 4, 8, 16, 32, 64:
         ivf_index.nprobe = nprobe
         recall, qps = eval_recall(index, nprobe)
@@ -79,7 +85,7 @@ def eval_and_plot(name, plot=True):
 
     if plot:
         data = np.array(data)
-        plt.plot(data[:, 0], data[:, 1], label=name)  # x - recall, y - qps
+        plt.plot(data[:, 0], data[:, 1], label=label)
 
 
 nlist = 128
@@ -87,13 +93,17 @@ nlist = 128
 plt.figure(figsize=(8, 6), dpi=80)
 
 # IVFFlat
-eval_and_plot(f"IVF{nlist},Flat")
+# eval_and_plot(f"IVF{nlist},Flat")
 
-# IVFFlatPanorama (with PCA transform to concentrate energy in early dimensions)
-eval_and_plot(f"PCA{d},IVF{nlist},FlatPanorama{nlevels}")
+pano_name = f"PCA{d},IVF{nlist},FlatPanorama{nlevels}"
 
-plt.title("IVF Flat Indexes on GIST1M")
-plt.title("Indices on GIST1M")
+# Panorama horizontal (default)
+eval_and_plot(pano_name, vertical=False)
+
+# Panorama vertical (column-major, SIMD-ized)
+eval_and_plot(pano_name, vertical=True)
+
+plt.title("Panorama Flat: Horizontal vs Vertical on GIST1M")
 plt.xlabel(f"Recall@{k}")
 plt.ylabel("QPS")
 plt.yscale("log")

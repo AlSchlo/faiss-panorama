@@ -187,6 +187,71 @@ PanoramaFlat::PanoramaFlat(size_t d, size_t n_levels, size_t batch_size)
     level_width_bytes = level_width_dims * sizeof(float);
 }
 
+void PanoramaFlat::copy_codes_to_level_layout(
+        uint8_t* codes,
+        size_t offset,
+        size_t n_entry,
+        const uint8_t* code) {
+    if (!use_vertical_layout) {
+        // Row-major within each level (base class implementation).
+        Panorama::copy_codes_to_level_layout(codes, offset, n_entry, code);
+        return;
+    }
+
+    // Column-major within each level (same as PanoramaPQ).
+    const float* src_f = reinterpret_cast<const float*>(code);
+    float* dst_f = reinterpret_cast<float*>(codes);
+    const size_t bs = batch_size;
+    const size_t lwd = level_width_dims;
+
+    for (size_t entry_idx = 0; entry_idx < n_entry; entry_idx++) {
+        size_t current_pos = offset + entry_idx;
+        size_t batch_no = current_pos / bs;
+        size_t pos_in_batch = current_pos % bs;
+        size_t batch_float_offset = batch_no * bs * d;
+
+        for (size_t level = 0; level < n_levels; level++) {
+            size_t level_float_offset = level * lwd * bs;
+            size_t actual_lwd = std::min(lwd, d - level * lwd);
+
+            for (size_t di = 0; di < actual_lwd; di++) {
+                dst_f[batch_float_offset + level_float_offset + di * bs +
+                      pos_in_batch] =
+                        src_f[entry_idx * d + level * lwd + di];
+            }
+        }
+    }
+}
+
+void PanoramaFlat::reconstruct(
+        idx_t key,
+        float* recons,
+        const uint8_t* codes_base) const {
+    if (!use_vertical_layout) {
+        Panorama::reconstruct(key, recons, codes_base);
+        return;
+    }
+
+    const float* codes_f = reinterpret_cast<const float*>(codes_base);
+    const size_t bs = batch_size;
+    const size_t lwd = level_width_dims;
+
+    size_t batch_no = key / bs;
+    size_t pos_in_batch = key % bs;
+    size_t batch_float_offset = batch_no * bs * d;
+
+    for (size_t level = 0; level < n_levels; level++) {
+        size_t level_float_offset = level * lwd * bs;
+        size_t actual_lwd = std::min(lwd, d - level * lwd);
+
+        for (size_t di = 0; di < actual_lwd; di++) {
+            recons[level * lwd + di] = codes_f[batch_float_offset +
+                                               level_float_offset + di * bs +
+                                               pos_in_batch];
+        }
+    }
+}
+
 void PanoramaFlat::compute_cumulative_sums(
         float* cumsum_base,
         size_t offset,

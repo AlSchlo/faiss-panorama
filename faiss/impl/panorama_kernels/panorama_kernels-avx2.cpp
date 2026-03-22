@@ -205,6 +205,83 @@ std::pair<uint8_t*, size_t> process_code_compression_impl<SIMDLevel::AVX2>(
     return std::make_pair(compressed_codes, num_active);
 }
 
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+void process_float_level_impl<SIMDLevel::AVX2>(
+        size_t level_width_dims,
+        size_t max_batch_size,
+        size_t num_active,
+        const float* query_level,
+        const float* compressed_codes,
+        float* exact_distances,
+        float factor) {
+    size_t dim = 0;
+
+    for (; dim + 3 < level_width_dims; dim += 4) {
+        __m256 q0 = _mm256_set1_ps(factor * query_level[dim + 0]);
+        __m256 q1 = _mm256_set1_ps(factor * query_level[dim + 1]);
+        __m256 q2 = _mm256_set1_ps(factor * query_level[dim + 2]);
+        __m256 q3 = _mm256_set1_ps(factor * query_level[dim + 3]);
+
+        const float* col0 = compressed_codes + (dim + 0) * max_batch_size;
+        const float* col1 = compressed_codes + (dim + 1) * max_batch_size;
+        const float* col2 = compressed_codes + (dim + 2) * max_batch_size;
+        const float* col3 = compressed_codes + (dim + 3) * max_batch_size;
+
+        size_t i = 0;
+        for (; i + 7 < num_active; i += 8) {
+            __m256 acc = _mm256_loadu_ps(exact_distances + i);
+            acc = _mm256_fmadd_ps(q0, _mm256_loadu_ps(col0 + i), acc);
+            acc = _mm256_fmadd_ps(q1, _mm256_loadu_ps(col1 + i), acc);
+            acc = _mm256_fmadd_ps(q2, _mm256_loadu_ps(col2 + i), acc);
+            acc = _mm256_fmadd_ps(q3, _mm256_loadu_ps(col3 + i), acc);
+            _mm256_storeu_ps(exact_distances + i, acc);
+        }
+
+        for (; i < num_active; i++) {
+            exact_distances[i] += factor * query_level[dim + 0] * col0[i];
+            exact_distances[i] += factor * query_level[dim + 1] * col1[i];
+            exact_distances[i] += factor * query_level[dim + 2] * col2[i];
+            exact_distances[i] += factor * query_level[dim + 3] * col3[i];
+        }
+    }
+
+    for (; dim < level_width_dims; dim++) {
+        __m256 q = _mm256_set1_ps(factor * query_level[dim]);
+        const float* col = compressed_codes + dim * max_batch_size;
+
+        size_t i = 0;
+        for (; i + 7 < num_active; i += 8) {
+            __m256 acc = _mm256_loadu_ps(exact_distances + i);
+            acc = _mm256_fmadd_ps(q, _mm256_loadu_ps(col + i), acc);
+            _mm256_storeu_ps(exact_distances + i, acc);
+        }
+
+        for (; i < num_active; i++) {
+            exact_distances[i] += factor * query_level[dim] * col[i];
+        }
+    }
+}
+
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+std::pair<float*, size_t> process_float_code_compression_impl<SIMDLevel::AVX2>(
+        size_t next_num_active,
+        size_t max_batch_size,
+        size_t level_width_dims,
+        float* compressed_codes_begin,
+        uint8_t* bitset,
+        const float* codes) {
+    // AVX2 lacks mask_compressstoreu; use the scalar NONE fallback.
+    return process_float_code_compression_impl<SIMDLevel::NONE>(
+            next_num_active,
+            max_batch_size,
+            level_width_dims,
+            compressed_codes_begin,
+            bitset,
+            codes);
+}
+
 } // namespace panorama_kernels
 } // namespace faiss
 

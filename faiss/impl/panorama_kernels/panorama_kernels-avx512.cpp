@@ -202,6 +202,112 @@ std::pair<uint8_t*, size_t> process_code_compression_impl<SIMDLevel::AVX512>(
     return std::make_pair(compressed_codes, num_active);
 }
 
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+void process_float_level_impl<SIMDLevel::AVX512>(
+        size_t level_width_dims,
+        size_t max_batch_size,
+        size_t num_active,
+        const float* query_level,
+        const float* compressed_codes,
+        float* exact_distances,
+        float factor) {
+    size_t dim = 0;
+
+    for (; dim + 3 < level_width_dims; dim += 4) {
+        __m512 q0 = _mm512_set1_ps(factor * query_level[dim + 0]);
+        __m512 q1 = _mm512_set1_ps(factor * query_level[dim + 1]);
+        __m512 q2 = _mm512_set1_ps(factor * query_level[dim + 2]);
+        __m512 q3 = _mm512_set1_ps(factor * query_level[dim + 3]);
+
+        const float* col0 = compressed_codes + (dim + 0) * max_batch_size;
+        const float* col1 = compressed_codes + (dim + 1) * max_batch_size;
+        const float* col2 = compressed_codes + (dim + 2) * max_batch_size;
+        const float* col3 = compressed_codes + (dim + 3) * max_batch_size;
+
+        size_t i = 0;
+        for (; i + 15 < num_active; i += 16) {
+            __m512 acc = _mm512_loadu_ps(exact_distances + i);
+            acc = _mm512_fmadd_ps(q0, _mm512_loadu_ps(col0 + i), acc);
+            acc = _mm512_fmadd_ps(q1, _mm512_loadu_ps(col1 + i), acc);
+            acc = _mm512_fmadd_ps(q2, _mm512_loadu_ps(col2 + i), acc);
+            acc = _mm512_fmadd_ps(q3, _mm512_loadu_ps(col3 + i), acc);
+            _mm512_storeu_ps(exact_distances + i, acc);
+        }
+
+        for (; i < num_active; i++) {
+            exact_distances[i] += factor * query_level[dim + 0] * col0[i];
+            exact_distances[i] += factor * query_level[dim + 1] * col1[i];
+            exact_distances[i] += factor * query_level[dim + 2] * col2[i];
+            exact_distances[i] += factor * query_level[dim + 3] * col3[i];
+        }
+    }
+
+    for (; dim < level_width_dims; dim++) {
+        __m512 q = _mm512_set1_ps(factor * query_level[dim]);
+        const float* col = compressed_codes + dim * max_batch_size;
+
+        size_t i = 0;
+        for (; i + 15 < num_active; i += 16) {
+            __m512 acc = _mm512_loadu_ps(exact_distances + i);
+            acc = _mm512_fmadd_ps(q, _mm512_loadu_ps(col + i), acc);
+            _mm512_storeu_ps(exact_distances + i, acc);
+        }
+
+        for (; i < num_active; i++) {
+            exact_distances[i] += factor * query_level[dim] * col[i];
+        }
+    }
+}
+
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+std::pair<float*, size_t> process_float_code_compression_impl<
+        SIMDLevel::AVX512>(
+        size_t next_num_active,
+        size_t max_batch_size,
+        size_t level_width_dims,
+        float* compressed_codes_begin,
+        uint8_t* bitset,
+        const float* codes) {
+    float* compressed_codes = compressed_codes_begin;
+    size_t num_active = 0;
+
+    if (next_num_active < max_batch_size) {
+        compressed_codes = compressed_codes_begin;
+        for (size_t point_idx = 0; point_idx < max_batch_size;
+             point_idx += 64) {
+            uint64_t mask = 0;
+            for (int g = 0; g < 8; g++) {
+                uint64_t bytes;
+                memcpy(&bytes, bitset + point_idx + g * 8, 8);
+                uint8_t bits = (uint8_t)_pext_u64(bytes, 0x0101010101010101ULL);
+                mask |= ((uint64_t)bits << (g * 8));
+            }
+
+            for (size_t di = 0; di < level_width_dims; di++) {
+                size_t col_offset = di * max_batch_size;
+                const float* src = codes + col_offset + point_idx;
+                float* dst = compressed_codes + col_offset + num_active;
+                int write_pos = 0;
+                for (int g = 0; g < 4; g++) {
+                    __mmask16 k = (__mmask16)((mask >> (g * 16)) & 0xFFFF);
+                    __m512 v = _mm512_loadu_ps(src + g * 16);
+                    _mm512_mask_compressstoreu_ps(dst + write_pos, k, v);
+                    write_pos += _mm_popcnt_u32((unsigned)k);
+                }
+            }
+
+            num_active += __builtin_popcountll(mask);
+        }
+    } else {
+        num_active = next_num_active;
+        compressed_codes = const_cast<float*>(codes);
+    }
+
+    return std::make_pair(compressed_codes, num_active);
+}
+
 #ifdef COMPILE_SIMD_AVX512_SPR
 // AVX512_SPR: Sapphire Rapids is a superset of AVX512. Reuse the
 // AVX512 implementation until a dedicated SPR specialization is written.
@@ -238,6 +344,44 @@ std::pair<uint8_t*, size_t> process_code_compression_impl<
             next_num_active,
             max_batch_size,
             level_width_bytes,
+            compressed_codes_begin,
+            bitset,
+            codes);
+}
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+void process_float_level_impl<SIMDLevel::AVX512_SPR>(
+        size_t level_width_dims,
+        size_t max_batch_size,
+        size_t num_active,
+        const float* query_level,
+        const float* compressed_codes,
+        float* exact_distances,
+        float factor) {
+    process_float_level_impl<SIMDLevel::AVX512>(
+            level_width_dims,
+            max_batch_size,
+            num_active,
+            query_level,
+            compressed_codes,
+            exact_distances,
+            factor);
+}
+
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+std::pair<float*, size_t>
+        process_float_code_compression_impl<SIMDLevel::AVX512_SPR>(
+                size_t next_num_active,
+                size_t max_batch_size,
+                size_t level_width_dims,
+                float* compressed_codes_begin,
+                uint8_t* bitset,
+                const float* codes) {
+    return process_float_code_compression_impl<SIMDLevel::AVX512>(
+            next_num_active,
+            max_batch_size,
+            level_width_dims,
             compressed_codes_begin,
             bitset,
             codes);

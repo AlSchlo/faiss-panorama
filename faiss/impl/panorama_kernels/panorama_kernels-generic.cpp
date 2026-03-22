@@ -126,6 +126,79 @@ std::pair<uint8_t*, size_t> process_code_compression_impl<SIMDLevel::NONE>(
     return std::make_pair(compressed_codes, num_active);
 }
 
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+void process_float_level_impl<SIMDLevel::NONE>(
+        size_t level_width_dims,
+        size_t max_batch_size,
+        size_t num_active,
+        const float* query_level,
+        const float* compressed_codes,
+        float* exact_distances,
+        float factor) {
+    for (size_t dim = 0; dim < level_width_dims; dim++) {
+        float q_val = factor * query_level[dim];
+        const float* col = compressed_codes + dim * max_batch_size;
+        for (size_t i = 0; i < num_active; i++) {
+            exact_distances[i] += q_val * col[i];
+        }
+    }
+}
+
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+std::pair<float*, size_t> process_float_code_compression_impl<SIMDLevel::NONE>(
+        size_t next_num_active,
+        size_t max_batch_size,
+        size_t level_width_dims,
+        float* compressed_codes_begin,
+        uint8_t* bitset,
+        const float* codes) {
+    float* compressed_codes = compressed_codes_begin;
+    size_t num_active = 0;
+
+    if (next_num_active < max_batch_size) {
+        compressed_codes = compressed_codes_begin;
+        for (size_t point_idx = 0; point_idx < max_batch_size;
+             point_idx += 64) {
+            uint64_t mask = 0;
+#ifdef __BMI2__
+            for (int g = 0; g < 8; g++) {
+                uint64_t bytes;
+                memcpy(&bytes, bitset + point_idx + g * 8, 8);
+                uint8_t bits = (uint8_t)_pext_u64(bytes, 0x0101010101010101ULL);
+                mask |= ((uint64_t)bits << (g * 8));
+            }
+#else
+            for (int b = 0; b < 64; b++) {
+                if (bitset[point_idx + b])
+                    mask |= (1ULL << b);
+            }
+#endif
+
+            for (size_t di = 0; di < level_width_dims; di++) {
+                size_t col_offset = di * max_batch_size;
+                const float* src = codes + col_offset + point_idx;
+                float* dst = compressed_codes + col_offset + num_active;
+                int write_pos = 0;
+                uint64_t m = mask;
+                while (m) {
+                    int bit = __builtin_ctzll(m);
+                    dst[write_pos++] = src[bit];
+                    m &= m - 1;
+                }
+            }
+
+            num_active += __builtin_popcountll(mask);
+        }
+    } else {
+        num_active = next_num_active;
+        compressed_codes = const_cast<float*>(codes);
+    }
+
+    return std::make_pair(compressed_codes, num_active);
+}
+
 void process_level(
         size_t level_width_bytes,
         size_t max_batch_size,
@@ -180,6 +253,42 @@ std::pair<uint8_t*, size_t> process_code_compression(
             next_num_active,
             max_batch_size,
             level_width_bytes,
+            compressed_codes_begin,
+            bitset,
+            codes);
+}
+
+void process_float_level(
+        size_t level_width_dims,
+        size_t max_batch_size,
+        size_t num_active,
+        const float* query_level,
+        const float* compressed_codes,
+        float* exact_distances,
+        float factor) {
+    DISPATCH_SIMDLevel(
+            process_float_level_impl,
+            level_width_dims,
+            max_batch_size,
+            num_active,
+            query_level,
+            compressed_codes,
+            exact_distances,
+            factor);
+}
+
+std::pair<float*, size_t> process_float_code_compression(
+        size_t next_num_active,
+        size_t max_batch_size,
+        size_t level_width_dims,
+        float* compressed_codes_begin,
+        uint8_t* bitset,
+        const float* codes) {
+    DISPATCH_SIMDLevel(
+            process_float_code_compression_impl,
+            next_num_active,
+            max_batch_size,
+            level_width_dims,
             compressed_codes_begin,
             bitset,
             codes);

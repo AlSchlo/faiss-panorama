@@ -52,6 +52,45 @@ std::pair<uint8_t*, size_t> process_code_compression_impl<SIMDLevel::ARM_SVE>(
             codes);
 }
 
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+void process_float_level_impl<SIMDLevel::ARM_SVE>(
+        size_t level_width_dims,
+        size_t max_batch_size,
+        size_t num_active,
+        const float* query_level,
+        const float* compressed_codes,
+        float* exact_distances,
+        float factor) {
+    process_float_level_impl<SIMDLevel::NONE>(
+            level_width_dims,
+            max_batch_size,
+            num_active,
+            query_level,
+            compressed_codes,
+            exact_distances,
+            factor);
+}
+
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+std::pair<float*, size_t>
+        process_float_code_compression_impl<SIMDLevel::ARM_SVE>(
+                size_t next_num_active,
+                size_t max_batch_size,
+                size_t level_width_dims,
+                float* compressed_codes_begin,
+                uint8_t* bitset,
+                const float* codes) {
+    return process_float_code_compression_impl<SIMDLevel::NONE>(
+            next_num_active,
+            max_batch_size,
+            level_width_dims,
+            compressed_codes_begin,
+            bitset,
+            codes);
+}
+
 } // namespace panorama_kernels
 } // namespace faiss
 

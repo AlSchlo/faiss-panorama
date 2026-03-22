@@ -37,6 +37,7 @@ namespace faiss {
 /// `ArrayInvertedListsPanorama`, which is a struct member of `IndexIVF`.
 struct IndexIVFFlatPanorama : IndexIVFFlat {
     size_t n_levels;
+    bool use_vertical_layout = false;
 
     std::vector<MaybeOwnedVector<float>> cum_sums;
 
@@ -47,6 +48,10 @@ struct IndexIVFFlatPanorama : IndexIVFFlat {
             int n_levels,
             MetricType = METRIC_L2,
             bool own_invlists = true);
+
+    /// Must be called before add() to switch between horizontal and
+    /// vertical (column-major) storage layouts.
+    void set_vertical_layout(bool enable);
 
     InvertedListScanner* get_InvertedListScanner(
             bool store_pairs,

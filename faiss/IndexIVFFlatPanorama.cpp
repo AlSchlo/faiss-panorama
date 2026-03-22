@@ -46,6 +46,18 @@ IndexIVFFlatPanorama::IndexIVFFlatPanorama(
 
 IndexIVFFlatPanorama::IndexIVFFlatPanorama() : n_levels(0) {}
 
+void IndexIVFFlatPanorama::set_vertical_layout(bool enable) {
+    use_vertical_layout = enable;
+    auto* storage =
+            dynamic_cast<ArrayInvertedListsPanorama*>(invlists);
+    FAISS_THROW_IF_NOT_MSG(
+            storage,
+            "IndexIVFFlatPanorama requires ArrayInvertedListsPanorama");
+    auto* pano = dynamic_cast<PanoramaFlat*>(storage->pano.get());
+    FAISS_THROW_IF_NOT(pano);
+    pano->use_vertical_layout = enable;
+}
+
 namespace {
 
 template <typename VectorDistance, bool use_sel>
@@ -70,25 +82,22 @@ struct IVFFlatScannerPanorama : InvertedListScanner {
         FAISS_THROW_IF_NOT(pano_flat);
         keep_max = vd.is_similarity;
         code_size = vd.d * sizeof(float);
-        cum_sums.resize(pano_flat->n_levels + 1);
+        query_cum_sums.resize(pano_flat->n_levels + 1);
     }
 
     const float* xi = nullptr;
-    std::vector<float> cum_sums;
+    std::vector<float> query_cum_sums;
     float q_norm = 0.0f;
     void set_query(const float* query) override {
         this->xi = query;
-        pano_flat->compute_query_cum_sums(query, cum_sums.data());
-        q_norm = cum_sums[0] * cum_sums[0];
+        pano_flat->compute_query_cum_sums(query, query_cum_sums.data());
+        q_norm = query_cum_sums[0] * query_cum_sums[0];
     }
 
     void set_list(idx_t list_no_in, float /* coarse_dis */) override {
         this->list_no = list_no_in;
     }
 
-    /// This function is unreachable as `IndexIVF` only calls this within
-    /// iterators, which are not supported by `IndexIVFFlatPanorama`.
-    /// To avoid undefined behavior, we throw an error here.
     float distance_to_code(const uint8_t* /* code */) const override {
         FAISS_THROW_MSG(
                 "IndexIVFFlatPanorama does not support distance_to_code");
@@ -109,9 +118,14 @@ struct IVFFlatScannerPanorama : InvertedListScanner {
 
         std::vector<float> exact_distances(bs);
         std::vector<uint32_t> active_indices(bs);
+        std::vector<uint8_t> bitset(bs, 0);
+        std::vector<float> compressed_float_codes(
+                bs * pano_flat->level_width_dims);
 
         PanoramaStats local_stats;
         local_stats.reset();
+
+        const bool vertical = pano_flat->use_vertical_layout;
 
         for (size_t batch_no = 0; batch_no < n_batches; batch_no++) {
             size_t batch_start = batch_no * bs;
@@ -121,7 +135,7 @@ struct IVFFlatScannerPanorama : InvertedListScanner {
                         codes,
                         cum_sums_data,
                         xi,
-                        cum_sums.data(),
+                        query_cum_sums.data(),
                         batch_no,
                         list_size,
                         sel,
@@ -129,21 +143,43 @@ struct IVFFlatScannerPanorama : InvertedListScanner {
                         use_sel,
                         active_indices,
                         exact_distances,
+                        bitset,
+                        compressed_float_codes,
                         handler.threshold,
                         local_stats);
             });
 
-            // Add batch survivors to heap.
-            for (size_t i = 0; i < num_active; i++) {
-                uint32_t idx = active_indices[i];
-                size_t global_idx = batch_start + idx;
-                float dis = exact_distances[idx];
+            if (vertical) {
+                // Vertical path: active_indices are global (batch_offset +
+                // local), exact_distances are compacted (index i corresponds
+                // to active_indices[i]).
+                for (size_t i = 0; i < num_active; i++) {
+                    uint32_t global_idx = active_indices[i];
+                    float dis = exact_distances[i];
 
-                if (C::cmp(handler.threshold, dis)) {
-                    int64_t id = store_pairs ? lo_build(list_no, global_idx)
-                                             : ids[global_idx];
-                    handler.add_result(dis, id);
-                    nup++;
+                    if (C::cmp(handler.threshold, dis)) {
+                        int64_t id = store_pairs
+                                ? lo_build(list_no, global_idx)
+                                : ids[global_idx];
+                        handler.add_result(dis, id);
+                        nup++;
+                    }
+                }
+            } else {
+                // Horizontal path: active_indices are batch-local,
+                // exact_distances[idx] indexed by batch-local idx.
+                for (size_t i = 0; i < num_active; i++) {
+                    uint32_t idx = active_indices[i];
+                    size_t global_idx = batch_start + idx;
+                    float dis = exact_distances[idx];
+
+                    if (C::cmp(handler.threshold, dis)) {
+                        int64_t id = store_pairs
+                                ? lo_build(list_no, global_idx)
+                                : ids[global_idx];
+                        handler.add_result(dis, id);
+                        nup++;
+                    }
                 }
             }
         }

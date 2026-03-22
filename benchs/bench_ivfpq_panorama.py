@@ -17,6 +17,8 @@ try:
 except ImportError:
     from faiss.contrib.datasets import DatasetGIST1M
 
+print("Using", faiss.get_compile_options())
+
 ds = DatasetGIST1M()
 
 SUBSET = 0.1  # Set to 1.0 for full dataset
@@ -48,7 +50,8 @@ else:
 print(f"Database: {nb} x {d}, Queries: {nq}, Train: {nt}")
 
 ALPHA = 8
-M_values = [960, 480, 240]
+# M_values = [960, 480, 240]
+M_values = [960]
 nbits = 8
 nlist = 128
 n_levels = 16
@@ -274,9 +277,9 @@ def build_ivfpq_panorama(M, n_levels, alpha=ALPHA):
 plt.figure(figsize=(10, 7), dpi=80)
 
 for M in M_values:
-    ivfpq = build_ivfpq(M)
-    eval_index(ivfpq, label=f"IVFPQ (M={M})")
-    del ivfpq
+    # ivfpq = build_ivfpq(M)
+    # eval_index(ivfpq, label=f"IVFPQ (M={M})")
+    # del ivfpq
 
     pano = build_ivfpq_panorama(M, n_levels)
     eval_index(pano, label=f"PCA+Spill+Rot + IVFPQPanorama (M={M})")

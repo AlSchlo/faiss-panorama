@@ -98,5 +98,52 @@ FAISS_API std::pair<uint8_t*, size_t> process_code_compression(
         uint8_t* bitset,
         const uint8_t* codes);
 
+// ---- Float kernels for PanoramaFlat vertical layout ----
+
+template <SIMDLevel SL>
+void process_float_level_impl(
+        size_t level_width_dims,
+        size_t max_batch_size,
+        size_t num_active,
+        const float* query_level,
+        const float* compressed_codes,
+        float* exact_distances,
+        float factor);
+
+template <SIMDLevel SL>
+std::pair<float*, size_t> process_float_code_compression_impl(
+        size_t next_num_active,
+        size_t max_batch_size,
+        size_t level_width_dims,
+        float* compressed_codes_begin,
+        uint8_t* bitset,
+        const float* codes);
+
+/// Accumulate broadcast-FMA of query dims against compressed float codes.
+///
+/// For each dim in the level, broadcasts factor*query[dim] and FMAs
+/// with contiguous compressed_codes[dim * max_batch_size + i] into
+/// exact_distances[i].
+FAISS_API void process_float_level(
+        size_t level_width_dims,
+        size_t max_batch_size,
+        size_t num_active,
+        const float* query_level,
+        const float* compressed_codes,
+        float* exact_distances,
+        float factor);
+
+/// Float-level stream compaction using the active bitset.
+///
+/// Same pattern as process_code_compression but for float columns.
+/// Skips compression if all points are active.
+FAISS_API std::pair<float*, size_t> process_float_code_compression(
+        size_t next_num_active,
+        size_t max_batch_size,
+        size_t level_width_dims,
+        float* compressed_codes_begin,
+        uint8_t* bitset,
+        const float* codes);
+
 } // namespace panorama_kernels
 } // namespace faiss
